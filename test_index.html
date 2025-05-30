@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RRR Analysis Tool</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: auto;
+        }
+        .input-group {
+            margin-bottom: 20px;
+        }
+        #folder-path {
+            width: 70%;
+            padding: 10px;
+            font-size: 16px;
+        }
+        #analyze-btn {
+            padding: 10px 20px;
+            font-size: 16px;
+            cursor: pointer;
+        }
+        #loading {
+            display: none;
+            font-size: 18px;
+            color: blue;
+        }
+        .section {
+            margin-top: 20px;
+            padding: 20px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+        #report-content {
+            white-space: pre-wrap;
+            font-family: monospace;
+        }
+        #report-content table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-bottom: 20px;
+        }
+        #report-content th, #report-content td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        #report-content th {
+            background-color: #f2f2f2;
+        }
+        #report-content[contenteditable="true"] td {
+            background-color: #f9f9f9;
+        }
+        .buttons {
+            margin-bottom: 20px;
+        }
+        .buttons button {
+            margin-right: 10px;
+            padding: 10px 15px;
+            cursor: pointer;
+        }
+        .visualization img {
+            max-width: 100%;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>RRR Analysis Tool</h1>
+        
+        <div class="input-group">
+            <input type="text" id="folder-path" placeholder="Enter folder path containing PDF reports">
+            <button id="analyze-btn">Analyze</button>
+        </div>
+
+        <div id="loading">
+            Analyzing PDFs... This may take a few minutes.
+        </div>
+
+        <div class="section" id="report-section">
+            <h2>Analysis Report</h2>
+            <div class="buttons">
+                <button id="edit-report-btn">Edit Report</button>
+                <button id="save-report-btn" style="display: none;">Save Changes</button>
+                <button id="cancel-edit-btn" style="display: none;">Cancel</button>
+                <button id="download-html-btn">Download HTML</button>
+                <button id="download-pdf-btn">Download PDF</button>
+            </div>
+            <div id="report-content"></div>
+        </div>
+
+        <div class="section" id="visualizations-section">
+            <h2>Visualizations</h2>
+            <div id="visualizations"></div>
+        </div>
+
+        <div class="section" id="evaluation-section">
+            <h2>Evaluation</h2>
+            <div id="evaluation"></div>
+        </div>
+
+        <div class="section" id="hyperlinks-section">
+            <h2>Hyperlinks</h2>
+            <div id="hyperlinks"></div>
+        </div>
+    </div>
+
+    <script>
+        // Store original report content for cancel functionality
+        let originalReportContent = '';
+
+        document.getElementById('analyze-btn').addEventListener('click', async () => {
+            const folderPath = document.getElementById('folder-path').value;
+            if (!folderPath) {
+                alert('Please enter a folder path');
+                return;
+            }
+
+            document.getElementById('loading').style.display = 'block';
+            try {
+                const response = await fetch('/analyze', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folder_path: folderPath })
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    // Render report
+                    document.getElementById('report-content').innerHTML = result.report;
+                    originalReportContent = result.report;
+
+                    // Render visualizations
+                    const visualizationsDiv = document.getElementById('visualizations');
+                    visualizationsDiv.innerHTML = result.visualizations.map(base64 => 
+                        `<img src="data:image/png;base64,${base64}" alt="Visualization">`
+                    ).join('');
+
+                    // Render evaluation
+                    document.getElementById('evaluation').innerHTML = 
+                        `<p>Score: ${result.evaluation.score}</p><p>${result.evaluation.text}</p>`;
+
+                    // Render hyperlinks
+                    const hyperlinksDiv = document.getElementById('hyperlinks');
+                    hyperlinksDiv.innerHTML = result.hyperlinks.map(link => 
+                        `<p><a href="${link.url}">${link.url}</a> (Page ${link.page}, ${link.source_file})<br>Context: ${link.context}</p>`
+                    ).join('');
+                } else {
+                    alert('Analysis failed: ' + result.detail);
+                }
+            } catch (error) {
+                console.error('Error analyzing PDFs:', error);
+                alert('Error analyzing PDFs');
+            } finally {
+                document.getElementById('loading').style.display = 'none';
+            }
+        });
+
+        document.getElementById('edit-report-btn').addEventListener('click', () => {
+            const reportContent = document.getElementById('report-content');
+            reportContent.contentEditable = true;
+            reportContent.style.backgroundColor = '#f9f9f9';
+            document.getElementById('save-report-btn').style.display = 'inline-block';
+            document.getElementById('cancel-edit-btn').style.display = 'inline-block';
+            document.getElementById('edit-report-btn').style.display = 'none';
+        });
+
+        document.getElementById('cancel-edit-btn').addEventListener('click', () => {
+            const reportContent = document.getElementById('report-content');
+            reportContent.innerHTML = originalReportContent;
+            reportContent.contentEditable = false;
+            reportContent.style.backgroundColor = 'transparent';
+            document.getElementById('save-report-btn').style.display = 'none';
+            document.getElementById('cancel-edit-btn').style.display = 'none';
+            document.getElementById('edit-report-btn').style.display = 'inline-block';
+        });
+
+        document.getElementById('save-report-btn').addEventListener('click', async () => {
+            const folderPath = document.getElementById('folder-path').value;
+            const editedReport = document.getElementById('report-content').innerHTML;
+
+            // Parse table data from Metrics Summary into metrics JSON
+            const metrics = { metrics: {} };
+            const tables = document.querySelectorAll('#report-content table');
+            tables.forEach(table => {
+                const header = table.previousElementSibling.textContent.trim();
+                if (header.includes('RBS') || header.includes('Tesco') || header.includes('Belk')) {
+                    const client = header.split(' ')[0];
+                    metrics.metrics['Customer Specific Testing (UAT)'] = metrics.metrics['Customer Specific Testing (UAT)'] || {};
+                    metrics.metrics['Customer Specific Testing (UAT)'][client] = [];
+                    const rows = table.querySelectorAll('tr');
+                    const headers = Array.from(rows[0].querySelectorAll('th')).map(th => th.textContent.trim());
+                    for (let i = 1; i < rows.length; i++) {
+                        const cells = rows[i].querySelectorAll('td');
+                        const passCount = parseInt(cells[headers.indexOf('Pass Count')].textContent.trim());
+                        const failCount = parseInt(cells[headers.indexOf('Fail Count')].textContent.trim());
+                        const status = cells[headers.indexOf('Status')].textContent.trim();
+                        // Basic validation
+                        if (isNaN(passCount) || passCount < 0 || isNaN(failCount) || failCount < 0) {
+                            alert(`Invalid Pass Count or Fail Count for ${client} in row ${i}`);
+                            return;
+                        }
+                        if (!['ON TRACK', 'MEDIUM RISK', 'RISK', 'NEEDS REVIEW'].includes(status)) {
+                            alert(`Invalid Status for ${client} in row ${i}`);
+                            return;
+                        }
+                        metrics.metrics['Customer Specific Testing (UAT)'][client].push({
+                            version: cells[headers.indexOf('Release')].textContent.trim(),
+                            pass_count: passCount,
+                            fail_count: failCount,
+                            status: status
+                        });
+                    }
+                } else {
+                    const metricName = header.replace(/(###|\(ATLS\)|\(BTLS\))/g, '').trim();
+                    const isATLS = header.includes('(ATLS)');
+                    const isBTLS = header.includes('(BTLS)');
+                    if (isATLS || isBTLS) {
+                        metrics.metrics[metricName] = metrics.metrics[metricName] || { ATLS: [], BTLS: [] };
+                        const subMetric = isATLS ? 'ATLS' : 'BTLS';
+                        const rows = table.querySelectorAll('tr');
+                        const headers = Array.from(rows[0].querySelectorAll('th')).map(th => th.textContent.trim());
+                        for (let i = 1; i < rows.length; i++) {
+                            const cells = rows[i].querySelectorAll('td');
+                            const value = parseFloat(cells[headers.indexOf('Value')].textContent.trim());
+                            const status = cells[headers.indexOf('Status')].textContent.trim();
+                            // Basic validation
+                            if (isNaN(value) || value < 0) {
+                                alert(`Invalid Value for ${metricName} (${subMetric}) in row ${i}`);
+                                return;
+                            }
+                            if (!['ON TRACK', 'MEDIUM RISK', 'RISK', 'NEEDS REVIEW'].includes(status)) {
+                                alert(`Invalid Status for ${metricName} (${subMetric}) in row ${i}`);
+                                return;
+                            }
+                            metrics.metrics[metricName][subMetric].push({
+                                version: cells[headers.indexOf('Release')].textContent.trim(),
+                                value: value,
+                                status: status
+                            });
+                        }
+                    } else if (metricName !== 'Delivery Against Requirements') {
+                        metrics.metrics[metricName] = metrics.metrics[metricName] || [];
+                        const rows = table.querySelectorAll('tr');
+                        const headers = Array.from(rows[0].querySelectorAll('th')).map(th => th.textContent.trim());
+                        for (let i = 1; i < rows.length; i++) {
+                            const cells = rows[i].querySelectorAll('td');
+                            const value = parseFloat(cells[headers.indexOf('Value')].textContent.trim());
+                            const status = cells[headers.indexOf('Status')].textContent.trim();
+                            // Basic validation
+                            if (isNaN(value) || value < 0) {
+                                alert(`Invalid Value for ${metricName} in row ${i}`);
+                                return;
+                            }
+                            if (!['ON TRACK', 'MEDIUM RISK', 'RISK', 'NEEDS REVIEW'].includes(status)) {
+                                alert(`Invalid Status for ${metricName} in row ${i}`);
+                                return;
+                            }
+                            metrics.metrics[metricName].push({
+                                version: cells[headers.indexOf('Release')].textContent.trim(),
+                                value: value,
+                                status: status
+                            });
+                        }
+                    }
+                }
+            });
+
+            try {
+                const response = await fetch('/save-report', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ folder_path: folderPath, report: editedReport, metrics })
+                });
+                const result = await response.json();
+                if (response.ok) {
+                    alert('Report and visualizations saved successfully!');
+                    originalReportContent = editedReport; // Update original content
+                    document.getElementById('report-content').contentEditable = false;
+                    document.getElementById('report-content').style.backgroundColor = 'transparent';
+                    document.getElementById('save-report-btn').style.display = 'none';
+                    document.getElementById('cancel-edit-btn').style.display = 'none';
+                    document.getElementById('edit-report-btn').style.display = 'inline-block';
+
+                    // Optionally refresh visualizations
+                    const vizResponse = await fetch('/analyze', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ folder_path: folderPath })
+                    });
+                    const vizResult = await vizResponse.json();
+                    if (vizResponse.ok) {
+                        document.getElementById('visualizations').innerHTML = vizResult.visualizations.map(base64 => 
+                            `<img src="data:image/png;base64,${base64}" alt="Visualization">`
+                        ).join('');
+                    }
+                } else {
+                    alert('Failed to save report: ' + result.detail);
+                }
+            } catch (error) {
+                console.error('Error saving report:', error);
+                alert('Error saving report');
+            }
+        });
+
+        document.getElementById('download-html-btn').addEventListener('click', () => {
+            const reportContent = document.getElementById('report-content').innerHTML;
+            const blob = new Blob([reportContent], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'report.html';
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        document.getElementById('download-pdf-btn').addEventListener('click', () => {
+            alert('PDF download functionality not implemented yet');
+        });
+    </script>
+</body>
+</html>
