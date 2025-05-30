@@ -1,5 +1,236 @@
-visualization_task = Task(
-    description=f"""Create a standalone Python script that:
+def setup_crew(extracted_text: str, versions: List[str]) -> tuple:
+    """
+    Sets up the AI crew system for analysis.
+
+    Creates three specialized crews:
+    1. Data Crew: Structures raw data into JSON format
+    2. Report Crew: Generates comprehensive analysis reports
+    3. Visualization Crew: Creates data visualizations
+
+    Args:
+        extracted_text (str): Text extracted from PDFs
+        versions (List[str]): List of release versions to analyze
+
+    Returns:
+        tuple: (data_crew, report_crew, viz_crew)
+    """
+    structurer = Agent(
+        role="Data Architect",
+        goal="Structure raw release data into VALID JSON format",
+        backstory="Expert in transforming unstructured data into clean JSON structures",
+        llm=llm,
+        verbose=True,
+        memory=True,
+    )
+
+    # Ensure we have at least 2 versions for comparison; repeat the last one if needed
+    if len(versions) < 2:
+        raise ValueError("At least two versions are required for analysis")
+    versions_for_example = versions[:3] if len(versions) >= 3 else versions + [versions[-1]] * (3 - len(versions))
+
+    validated_structure_task = Task(
+        description=f"""Convert this release data to STRICT JSON:
+{extracted_text}
+
+RULES:
+1. Output MUST be valid JSON only
+2. Use this EXACT structure:
+{{
+    "metrics": {{
+        "Open ALL RRR Defects": {{"ATLS": [{{"version": "{versions[0]}", "value": 0, "status": "TEXT"}}, ...], "BTLS": [...]}},
+        "Open Security Defects": {{"ATLS": [...], "BTLS": [...]}},
+        "All Open Defects (T-1)": {{"ATLS": [...], "BTLS": [...]}},
+        "All Security Open Defects": {{"ATLS": [...], "BTLS": [...]}},
+        "Load/Performance": {{"ATLS": [...], "BTLS": [...]}},
+        "E2E Test Coverage": [{{"version": "{versions[0]}", "value": 0, "status": "TEXT"}}, ...],
+        "Automation Test Coverage": [...],
+        "Unit Test Coverage": [...],
+        "Defect Closure Rate": [...],
+        "Regression Issues": [...],
+        "Customer Specific Testing (UAT)": {{
+            "RBS": [{{"version": "{versions[0]}", "pass_count": 0, "fail_count": 0, "status": "TEXT"}}, ...],
+            "Tesco": [...],
+            "Belk": [...]
+        }}
+    }}
+}}
+3. Include ALL metrics: {', '.join(EXPECTED_METRICS)}
+4. Use versions {', '.join(f'"{v}"' for v in versions)}
+5. For UAT, pass_count and fail_count must be non-negative integers
+6. For other metrics, values must be non-negative numbers
+7. Status must be one of: "ON TRACK", "MEDIUM RISK", "RISK", "NEEDS REVIEW"
+8. No text outside JSON, no trailing commas, no comments
+9. Validate JSON syntax before output
+EXAMPLE:
+{{
+    "metrics": {{
+        "Open ALL RRR Defects": {{
+            "ATLS": [
+                {{"version": "{versions_for_example[0]}", "value": 10, "status": "RISK"}},
+                {{"version": "{versions_for_example[1]}", "value": 8, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[2]}", "value": 5, "status": "ON TRACK"}}
+            ],
+            "BTLS": [
+                {{"version": "{versions_for_example[0]}", "value": 12, "status": "RISK"}},
+                {{"version": "{versions_for_example[1]}", "value": 9, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[2]}", "value": 6, "status": "ON TRACK"}}
+            ]
+        }},
+        "Customer Specific Testing (UAT)": {{
+            "RBS": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 50, "fail_count": 5, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 48, "fail_count": 6, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 52, "fail_count": 4, "status": "ON TRACK"}}
+            ],
+            "Tesco": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 45, "fail_count": 3, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 46, "fail_count": 2, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 47, "fail_count": 1, "status": "ON TRACK"}}
+            ],
+            "Belk": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 40, "fail_count": 7, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 42, "fail_count": 5, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 43, "fail_count": 4, "status": "ON TRACK"}}
+            ]
+        }}
+    }}
+}}""",
+        agent=structurer,
+        async_execution=False,
+        expected_output="Valid JSON string with no extra text",
+        callback=lambda output: (
+            logger.info(f"Structure task output type: {type(output.raw)}, content: {output.raw if isinstance(output.raw, str) else output.raw}"),
+            setattr(shared_state, 'metrics', process_task_output(output.raw, versions))
+        )
+    )
+
+    analyst = Agent(
+        role="Trend Analyst",
+        goal="Add accurate trends to metrics data and maintain valid JSON",
+        backstory="Data scientist specializing in metric analysis",
+        llm=llm,
+        verbose=True,
+        memory=True,
+    )
+
+    analysis_task = Task(
+        description=f"""Enhance metrics JSON with trends:
+1. Input is JSON from Data Structurer
+2. Add 'trend' field to each metric item
+3. Output MUST be valid JSON
+4. For metrics except Customer Specific Testing (UAT):
+   - Sort items by version ({', '.join(f'"{v}"' for v in versions)})
+   - For each item (except first per metric):
+     - Compute % change: ((current_value - previous_value) / previous_value) * 100
+     - If previous_value is 0 or |change| < 0.01, set trend to "→"
+     - If |% change| < 1%, set trend to "→"
+     - If % change > 0, set trend to "↑ (X.X%)"
+     - If % change < 0, set trend to "↓ (X.X%)"
+   - First item per metric gets "→"
+5. For Customer Specific Testing (UAT):
+   - For each client (RBS, Tesco, Belk), compute pass rate: pass_count / (pass_count + fail_count) * 100
+   - Sort items by version ({', '.join(f'"{v}"' for v in versions)})
+   - For each item (except first per client):
+     - Compute % change in pass rate: (current_pass_rate - previous_pass_rate)
+     - If previous_total or current_total is 0 or |change| < 0.01, set trend to "→"
+     - If |% change| < 1%, set trend to "→"
+     - If % change > 0, set trend to "↑ (X.X%)"
+     - If % change < 0, set trend to "↓ (X.X%)"
+   - First item per client gets "→"
+6. Ensure all metrics are included: {', '.join(EXPECTED_METRICS)}
+7. Use double quotes for all strings
+8. No trailing commas or comments
+9. Validate JSON syntax before output
+EXAMPLE INPUT:
+{{
+    "metrics": {{
+        "Open ALL RRR Defects": {{
+            "ATLS": [
+                {{"version": "{versions_for_example[0]}", "value": 10, "status": "RISK"}},
+                {{"version": "{versions_for_example[1]}", "value": 8, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[2]}", "value": 5, "status": "ON TRACK"}}
+            ],
+            "BTLS": [
+                {{"version": "{versions_for_example[0]}", "value": 12, "status": "RISK"}},
+                {{"version": "{versions_for_example[1]}", "value": 9, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[2]}", "value": 6, "status": "ON TRACK"}}
+            ]
+        }},
+        "Customer Specific Testing (UAT)": {{
+            "RBS": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 50, "fail_count": 5, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 48, "fail_count": 6, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 52, "fail_count": 4, "status": "ON TRACK"}}
+            ],
+            "Tesco": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 45, "fail_count": 3, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 46, "fail_count": 2, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 47, "fail_count": 1, "status": "ON TRACK"}}
+            ],
+            "Belk": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 40, "fail_count": 7, "status": "MEDIUM RISK"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 42, "fail_count": 5, "status": "ON TRACK"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 43, "fail_count": 4, "status": "ON TRACK"}}
+            ]
+        }}
+    }}
+}}
+EXAMPLE OUTPUT:
+{{
+    "metrics": {{
+        "Open ALL RRR Defects": {{
+            "ATLS": [
+                {{"version": "{versions_for_example[0]}", "value": 10, "status": "RISK", "trend": "→"}},
+                {{"version": "{versions_for_example[1]}", "value": 8, "status": "MEDIUM RISK", "trend": "↓ (20.0%)"}},
+                {{"version": "{versions_for_example[2]}", "value": 5, "status": "ON TRACK", "trend": "↓ (37.5%)"}}
+            ],
+            "BTLS": [
+                {{"version": "{versions_for_example[0]}", "value": 12, "status": "RISK", "trend": "→"}},
+                {{"version": "{versions_for_example[1]}", "value": 9, "status": "MEDIUM RISK", "trend": "↓ (25.0%)"}},
+                {{"version": "{versions_for_example[2]}", "value": 6, "status": "ON TRACK", "trend": "↓ (33.3%)"}}
+            ]
+        }},
+        "Customer Specific Testing (UAT)": {{
+            "RBS": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 50, "fail_count": 5, "status": "ON TRACK", "pass_rate": 90.9, "trend": "→"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 48, "fail_count": 6, "status": "MEDIUM RISK", "pass_rate": 88.9, "trend": "↓ (2.0%)"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 52, "fail_count": 4, "status": "ON TRACK", "pass_rate": 92.9, "trend": "↑ (4.0%)"}}
+            ],
+            "Tesco": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 45, "fail_count": 3, "status": "ON TRACK", "pass_rate": 93.8, "trend": "→"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 46, "fail_count": 2, "status": "ON TRACK", "pass_rate": 95.8, "trend": "↑ (2.0%)"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 47, "fail_count": 1, "status": "ON TRACK", "pass_rate": 97.9, "trend": "↑ (2.1%)"}}
+            ],
+            "Belk": [
+                {{"version": "{versions_for_example[0]}", "pass_count": 40, "fail_count": 7, "status": "MEDIUM RISK", "pass_rate": 85.1, "trend": "→"}},
+                {{"version": "{versions_for_example[1]}", "pass_count": 42, "fail_count": 5, "status": "ON TRACK", "pass_rate": 89.4, "trend": "↑ (4.3%)"}},
+                {{"version": "{versions_for_example[2]}", "pass_count": 43, "fail_count": 4, "status": "ON TRACK", "pass_rate": 91.5, "trend": "↑ (2.1%)"}}
+            ]
+        }}
+    }}
+}}
+Only return valid JSON.""",
+        agent=analyst,
+        async_execution=True,
+        context=[validated_structure_task],
+        expected_output="Valid JSON string with trend analysis",
+        callback=lambda output: (
+            logger.info(f"Analysis task output type: {type(output.raw)}, content: {output.raw if isinstance(output.raw, str) else output.raw}"),
+            setattr(shared_state, 'metrics', process_task_output(output.raw, versions))
+        )
+    )
+
+    visualizer = Agent(
+        role="Data Visualizer",
+        goal="Generate consistent visualizations for all metrics",
+        backstory="Expert in generating Python plots for software metrics",
+        llm=llm,
+        verbose=True,
+        memory=True,
+    )
+
+    visualization_task = Task(
+        description=f"""Create a standalone Python script that:
 1. Accepts the provided 'metrics' JSON structure as input.
 2. Generates visualizations for the following metrics, using the specified chart types:
    - Open ALL RRR Defects (ATLS and BTLS): Grouped bar chart comparing ATLS and BTLS across releases.
@@ -25,14 +256,177 @@ visualization_task = Task(
 10. For grouped bar charts, use distinct colors for ATLS and BTLS (e.g., blue for ATLS, orange for BTLS) and include a legend.
 11. For stacked bar charts, use green for pass_count, red for fail_count, and include a legend.
 12. Use the following metric lists for iteration:
-    atls_btls_metrics = {{'{', '.join(EXPECTED_METRICS[:5])}}
-    coverage_metrics = {{'{', '.join(EXPECTED_METRICS[5:8])}}
-    other_metrics = {{'{', '.join(EXPECTED_METRICS[8:10])}}
+    atls_btls_metrics = {', '.join(EXPECTED_METRICS[:5])}
+    coverage_metrics = {', '.join(EXPECTED_METRICS[5:8])}
+    other_metrics = {', '.join(EXPECTED_METRICS[8:10])}
     uat_metric = 'Customer Specific Testing (UAT)'
     do_not_use = 'Delivery Against Requirements'
 13. Use versions: NA (use versions from data)
 14. If no data is available, generate a placeholder chart with a message indicating the issue.""",
-    agent=visualizer,
-    context=[analysis_task],
-    expected_output="Python script only"
-)
+        agent=visualizer,
+        context=[analysis_task],
+        expected_output="Python script only"
+    )
+
+    reporter = Agent(
+        role="Technical Writer",
+        goal="Generate a professional markdown report",
+        backstory="Expert in generating structured software metrics reports",
+        llm=llm,
+        verbose=True,
+        memory=True,
+    )
+
+    overview_task = Task(
+        description=f"""Write ONLY the following Markdown section:
+## Overview
+- Provide a 3-4 sentence comprehensive summary of release health, covering overall stability, notable improvements, and any concerning patterns observed across releases {', '.join(versions)}
+- Explicitly list all analyzed releases
+- Include 2-3 notable improvements with specific metrics and version comparisons where relevant
+- Mention any significant deviations from expected patterns
+Only output this section.""",
+        agent=reporter,
+        context=[analysis_task],
+        expected_output="Detailed markdown for Overview section"
+    )
+
+    metrics_summary_task = Task(
+        description=f"""Write ONLY the '## Metrics Summary' section with the following order:
+### Delivery Against Requirements
+### Open ALL RRR Defects (ATLS)
+### Open ALL RRR Defects (BTLS)
+### Open Security Defects (ATLS)
+### Open Security Defects (BTLS)
+### All Open Defects (T-1) (ATLS)
+### All Open Defects (T-1) (BTLS)
+### All Security Open Defects (ATLS)
+### All Security Open Defects (BTLS)
+### Customer Specific Testing (UAT)
+#### RBS
+#### Tesco
+#### Belk
+### Load/Performance
+#### ATLS
+#### BTLS
+### E2E Test Coverage
+### Automation Test Coverage
+### Unit Test Coverage
+### Defect Closure Rate (ATLS)
+### Regression Issues
+
+STRICT RULES:
+- For Customer Specific Testing (UAT), generate tables for each client with the following columns: Release | Pass Count | Fail Count | Pass Rate (%) | Trend | Status
+- For other metrics, use existing table formats
+- Use only these statuses: ON TRACK, MEDIUM RISK, RISK, NEEDS REVIEW
+- Use only these trend formats: ↑ (X%), ↓ (Y%), →
+- No missing releases or extra formatting
+EXAMPLE FOR UAT:
+#### RBS
+| Release | Pass Count | Fail Count | Pass Rate (%) | Trend      | Status       |
+|---------|------------|------------|---------------|------------|--------------|
+| {versions_for_example[0]} | 50         | 5          | 90.9          | →          | ON TRACK     |
+| {versions_for_example[1]} | 48         | 6          | 88.9          | ↓ (2.0%)   | MEDIUM RISK  |
+| {versions_for_example[2]} | 52         | 4          | 92.9          | ↑ (4.0%)   | ON TRACK     |
+Only output this section.""",
+        agent=reporter,
+        context=[analysis_task],
+        expected_output="Markdown for Metrics Summary"
+    )
+
+    key_findings_task = Task(
+        description=f"""Generate ONLY this Markdown section:
+## Key Findings
+1. First finding (2-3 sentences explaining the observation with specific metric references and version comparisons across {', '.join(versions)})
+2. Second finding (2-3 sentences with quantitative data points from the metrics where applicable)
+3. Third finding (2-3 sentences focusing on security-related observations)
+4. Fourth finding (2-3 sentences about testing coverage trends)
+5. Fifth finding (2-3 sentences highlighting any unexpected patterns or anomalies)
+6. Sixth finding (2-3 sentences about performance or load metrics)
+7. Seventh finding (2-3 sentences summarizing defect management effectiveness)
+
+Maintain professional, analytical tone while being specific.""",
+        agent=reporter,
+        context=[analysis_task],
+        expected_output="Detailed markdown bullet list"
+    )
+
+    recommendations_task = Task(
+        description=f"""Generate ONLY this Markdown section:
+## Recommendations
+1. First recommendation (2-3 actionable sentences with specific metrics or areas to address)
+2. Second recommendation (2-3 sentences about security improvements with version targets)
+3. Third recommendation (2-3 sentences about testing coverage enhancements)
+4. Fourth recommendation (2-3 sentences about defect management process changes)
+5. Fifth recommendation (2-3 sentences about performance optimization)
+6. Sixth recommendation (2-3 sentences about risk mitigation strategies)
+7. Seventh recommendation (2-3 sentences about monitoring improvements)
+
+Each recommendation should be specific, measurable, and tied to the findings.""",
+        agent=reporter,
+        context=[analysis_task],
+        expected_output="Detailed markdown bullet list"
+    )
+
+    assemble_report_task = Task(
+        description="""Assemble the final markdown report in this exact structure:
+
+# Software Metrics Report
+
+## Overview
+[Insert from Overview Task]
+
+---
+
+## Metrics Summary
+[Insert from Metrics Summary Task]
+
+---
+
+## Key Findings
+[Insert from Key Findings Task]
+
+---
+
+## Recommendations
+[Insert from Recommendations Task]
+
+Do NOT alter content. Just combine with correct formatting.""",
+        agent=reporter,
+        context=[
+            overview_task,
+            metrics_summary_task,
+            key_findings_task,
+            recommendations_task
+        ],
+        expected_output="Full markdown report"
+    )
+
+    data_crew = Crew(
+        agents=[structurer, analyst],
+        tasks=[validated_structure_task, analysis_task],
+        process=Process.sequential,
+        verbose=True
+    )
+
+    report_crew = Crew(
+        agents=[reporter],
+        tasks=[overview_task, metrics_summary_task, key_findings_task, recommendations_task, assemble_report_task],
+        process=Process.sequential,
+        verbose=True
+    )
+
+    viz_crew = Crew(
+        agents=[visualizer],
+        tasks=[visualization_task],
+        process=Process.sequential,
+        verbose=True
+    )
+
+    for crew, name in [(data_crew, "data_crew"), (report_crew, "report_crew"), (viz_crew, "viz_crew")]:
+        for i, task in enumerate(crew.tasks):
+            if not isinstance(task, Task):
+                logger.error(f"Invalid task in {name} at index {i}: {task}")
+                raise ValueError(f"Task in {name} is not a Task object")
+            logger.info(f"{name} task {i} async_execution: {task.async_execution}")
+
+    return data_crew, report_crew, viz_crew
