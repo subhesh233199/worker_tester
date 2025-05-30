@@ -1,0 +1,38 @@
+visualization_task = Task(
+    description=f"""Create a standalone Python script that:
+1. Accepts the provided 'metrics' JSON structure as input.
+2. Generates visualizations for the following metrics, using the specified chart types:
+   - Open ALL RRR Defects (ATLS and BTLS): Grouped bar chart comparing ATLS and BTLS across releases.
+   - Open Security Defects (ATLS and BTLS): Grouped bar chart comparing ATLS and BTLS across releases.
+   - All Open Defects (T-1) (ATLS and BTLS): Grouped bar chart comparing ATLS and BTLS across releases.
+   - All Security Open Defects (ATLS and BTLS): Grouped bar chart comparing ATLS and BTLS across releases.
+   - Load/Performance (ATLS and BTLS): Grouped bar chart comparing ATLS and BTLS across releases.
+   - E2E Test Coverage: Line chart showing trend across releases.
+   - Automation Test Coverage: Line chart showing trend across releases.
+   - Unit Test Coverage: Line chart showing trend across releases.
+   - Defect Closure Rate: Bar chart showing values across releases.
+   - Regression Issues: Bar chart showing values across releases.
+   - Customer Specific Testing (UAT) for RBS: Stacked bar chart showing pass/fail counts across releases.
+   - Customer Specific Testing (UAT) for Tesco: Stacked bar chart showing pass/fail counts across releases.
+   - Customer Specific Testing (UAT) for Belk: Stacked bar chart showing pass/fail counts across releases.
+3. Each plot must use: plt.figure(figsize=(8,5), dpi=120).
+4. Save each chart as a PNG in 'visualizations/' directory with descriptive filenames (e.g., 'open_all_rrr_defects_atls_btls.png', 'uat_rbs.png').
+5. Include error handling for missing or malformed data, ensuring all specified charts are generated.
+6. Log each chart generation attempt to 'visualization.log' for debugging.
+7. Output ONLY the Python code, with no markdown or explanation text.
+8. Do not generate charts for Delivery Against Requirements.
+9. Ensure at least 10 charts are generated for the listed metrics, plus 3 UAT charts.
+10. For grouped bar charts, use distinct colors for ATLS and BTLS (e.g., blue for ATLS, orange for BTLS) and include a legend.
+11. For stacked bar charts, use green for pass_count, red for fail_count, and include a legend.
+12. Use the following metric lists for iteration:
+    atls_btls_metrics = {{'{', '.join(EXPECTED_METRICS[:5])}}
+    coverage_metrics = {{'{', '.join(EXPECTED_METRICS[5:8])}}
+    other_metrics = {{'{', '.join(EXPECTED_METRICS[8:10])}}
+    uat_metric = 'Customer Specific Testing (UAT)'
+    do_not_use = 'Delivery Against Requirements'
+13. Use versions: NA (use versions from data)
+14. If no data is available, generate a placeholder chart with a message indicating the issue.""",
+    agent=visualizer,
+    context=[analysis_task],
+    expected_output="Python script only"
+)
